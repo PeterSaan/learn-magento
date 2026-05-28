@@ -47,3 +47,5 @@ generated/
 vendor/
 app/etc/config.php
 app/etc/env.php
+*.env*
+!*.example

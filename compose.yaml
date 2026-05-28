@@ -1,0 +1,152 @@
+# Docker Compose for Magento 2.4.9
+# Services: MariaDB 11.8 · Valkey 9.1 · OpenSearch 3.5
+# https://magento.watch/versions/magento-community/2.4.9
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # MariaDB 11.8
+  # Magento 2.4.9 requires MariaDB 11.4+ (11.8 is the latest supported LTS)
+  # ---------------------------------------------------------------------------
+  mariadb:
+    image: mariadb:11.8
+    container_name: magento_mariadb
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-root_secret}
+      MARIADB_DATABASE: ${MARIADB_DATABASE:-magento}
+      MARIADB_USER: ${MARIADB_USER:-magento}
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:-magento_secret}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --innodb-buffer-pool-size=512M
+      - --innodb-log-file-size=256M
+      - --max-allowed-packet=64M
+      - --optimizer-switch=rowid_filter=off
+      # Magento requires strict mode disabled
+      - --sql-mode=NO_ENGINE_SUBSTITUTION
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    ports:
+      - "${MARIADB_PORT:-3306}:3306"
+    networks:
+      - magento
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Valkey 9.1
+  # Official Redis-compatible cache/session store for Magento 2.4.9
+  # Two separate instances are recommended: one for cache, one for sessions
+  # ---------------------------------------------------------------------------
+  valkey-cache:
+    image: valkey/valkey:9.1.0-alpine
+    container_name: magento_valkey_cache
+    restart: unless-stopped
+    command:
+      - valkey-server
+      - --maxmemory 256mb
+      - --maxmemory-policy allkeys-lru
+      - --save ""
+      # Disable persistence for cache — volatile data only
+    volumes:
+      - valkey_cache_data:/data
+    ports:
+      - "${VALKEY_CACHE_PORT:-6379}:6379"
+    networks:
+      - magento
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  valkey-session:
+    image: valkey/valkey:9.1.0-alpine
+    container_name: magento_valkey_session
+    restart: unless-stopped
+    command:
+      - valkey-server
+      - --maxmemory 128mb
+      - --maxmemory-policy noeviction
+      # Keep sessions persistent so they survive restarts
+      - --save 60 1
+      - --appendonly yes
+    volumes:
+      - valkey_session_data:/data
+    ports:
+      - "${VALKEY_SESSION_PORT:-6380}:6379"
+    networks:
+      - magento
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # OpenSearch 3.5
+  # Required search engine for Magento 2.4.9 (Elasticsearch support dropped)
+  # Single-node development setup — scale to a cluster for production
+  # ---------------------------------------------------------------------------
+  opensearch:
+    image: opensearchproject/opensearch:3.5.0
+    container_name: magento_opensearch
+    restart: unless-stopped
+    environment:
+      - cluster.name=magento-cluster
+      - node.name=magento-node-01
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      # Disable security plugin for local dev — enable for staging/production
+      - plugins.security.disabled=true
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_ADMIN_PASSWORD:-Admin@Magento2024!}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+    ports:
+      - "${OPENSEARCH_PORT:-9200}:9200"
+      - "${OPENSEARCH_PERF_PORT:-9600}:9600"
+    networks:
+      - magento
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "curl -fsSL http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+# -----------------------------------------------------------------------------
+# Networks
+# -----------------------------------------------------------------------------
+networks:
+  magento:
+    driver: bridge
+    name: magento_network
+
+# -----------------------------------------------------------------------------
+# Volumes
+# -----------------------------------------------------------------------------
+volumes:
+  mariadb_data:
+    driver: local
+  valkey_cache_data:
+    driver: local
+  valkey_session_data:
+    driver: local
+  opensearch_data:
+    driver: local
